@@ -1,4 +1,4 @@
-**Super fast , PID controlled line following bot with easy web interface for tuning **
+**Super fast , PID controlled line following bot with easy web interface for tuning**
 
 **Features**
 - Web ui
@@ -11,8 +11,7 @@
 - start, stop from web ui 
 
 
-**ir sensor array to esp32 pin diagram 
-**
+**ir sensor array to esp32 pin diagram**
 **Component list -**
 - ESP32
 - DRV8833 motor driver
