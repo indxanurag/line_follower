@@ -25,7 +25,7 @@
 ( add one 1000uf capacitor to the driver + and - terminal )
 
 **- wiring to be used ( need to use 6 ir led array )**
-- IR2  GPIO 36
+- IR2 → GPIO 36
 - IR3  GPIO 39
 - IR4  GPIO 34  (center)
 - IR5  GPIO 35  (center)
@@ -40,12 +40,12 @@
 
 
  original wiring , don't  use this wiring 
-IR1  GPIO 36
-IR2  GPIO 39
-IR3  GPIO 34
-IR4  GPIO 35  (center)
-IR5  GPIO 32  (center)
-IR6  GPIO 26
-IR7  GPIO 25
-IR8  GPIO 33
+- IR1  GPIO 36
+- IR2  GPIO 39
+- IR3  GPIO 34
+- IR4  GPIO 35  (center)
+- IR5  GPIO 32  (center)
+- IR6  GPIO 26
+- IR7  GPIO 25
+- IR8  GPIO 33
 (GPIO 25 and GPIO 26 is not usable while WiFi is turned on , so in this case you need to change the ir led wiring )
