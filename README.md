@@ -25,18 +25,18 @@
 ( add one 1000uf capacitor to the driver + and - terminal )
 
 **- wiring to be used ( need to use 6 ir led array )**
--IR2  GPIO 36
--IR3  GPIO 39
--IR4  GPIO 34  (center)
--IR5  GPIO 35  (center)
--IR6  GPIO 32
--IR7  GPIO 33
+- IR2  GPIO 36
+- IR3  GPIO 39
+- IR4  GPIO 34  (center)
+- IR5  GPIO 35  (center)
+- IR6  GPIO 32
+- IR7  GPIO 33
 
 **- esp32 to drv8833 motor driver -**
--IN1  GPIO 23
--IN2  GPIO 19
--IN3  GPIO 13
--IN4  GPIO 27
+- IN1  GPIO 23
+- IN2  GPIO 19
+- IN3  GPIO 13
+- IN4  GPIO 27
 
 
  original wiring , don't  use this wiring 
