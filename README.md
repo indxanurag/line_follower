@@ -48,5 +48,5 @@
 - IR6 → GPIO 26
 - IR7 → GPIO 25
 - IR8 → GPIO 33
-- 
+
 - (GPIO 25 and GPIO 26 is not usable while WiFi is turned on , so in this case you need to change the ir led wiring )
