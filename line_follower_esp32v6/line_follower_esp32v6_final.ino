@@ -113,7 +113,7 @@ float imuCalSumSqZ = 0.0f;
 // ── Motor balance calibration state ──────────────────────
 bool          motorCalibrating  = false;
 unsigned long motorCalStart     = 0;
-const unsigned long MOTOR_CAL_MS = 2000;
+const unsigned long MOTOR_CAL_MS = 2500;  // extra 500ms for more accurate average
 float motorCalYawAccum = 0.0f;
 int   motorCalSamples  = 0;
 
@@ -123,6 +123,23 @@ unsigned long turnCalStart     = 0;
 const unsigned long TURN_CAL_MS = 1500;
 float turnCalYawAccum = 0.0f;
 int   turnCalSamples  = 0;
+int   turnCalDirection = 1;  // +1 = right (L motor fwd), -1 = left
+
+// ── Auto PID Tune (Relay / Ziegler-Nichols) ───────────────
+bool          autoPIDActive    = false;
+unsigned long autoPIDStart     = 0;
+const unsigned long AUTO_PID_MS = 10000;  // 10-second observation window
+// Relay bang-bang state
+bool  relayHigh        = false;           // true = full right correction
+float relayAmplitude   = 0.0f;            // d = half the relay output
+float relayOutput      = 0.0f;
+// Oscillation tracking
+unsigned long lastCrossTime  = 0;
+float         lastCrossError = 0.0f;
+int           crossCount     = 0;
+float         periodSum      = 0.0f;
+float         amplitudeSum   = 0.0f;
+float         peakError      = 0.0f;
 
 // ── Calibration IR ──────────────────────────────────────
 int  calMin[NUM_SENSORS], calMax[NUM_SENSORS];
@@ -286,13 +303,16 @@ input[type=range]{width:100%;accent-color:#7dd3fc}
   <div class="gyro-bar-wrap"><div class="gyro-bar-fill" id="gyroBar"></div></div>
   <div class="row" style="margin-top:10px">
     <button class="bv" id="btnImuCal" onclick="cmd('imu_cal')">🔮 IMU Cal (keep still 3s)</button>
-    <button class="bc" id="btnMotorCal" onclick="cmd('motor_bal_cal')">⚖ Motor Bal Cal (2s drive)</button>
+    <button class="bc" id="btnMotorCal" onclick="cmd('motor_bal_cal')">⚖ Motor Bal Cal (2.5s drive)</button>
     <button class="by" id="btnTurnCal" onclick="cmd('turn_rate_cal')">↩ Turn Rate Cal (1.5s)</button>
+    <button class="bg" id="btnAutoPID" onclick="startAutoPID_ui()">🤖 Auto PID Tune (10s)</button>
+    <button class="br" id="btnStopAutoPID" onclick="cmd('stop_auto_pid')" style="display:none">⏹ Stop Auto Tune</button>
   </div>
   <div style="font-size:.68rem;color:#444;margin-top:8px;line-height:1.7">
     <b style="color:#666">IMU Cal</b> — Bot must be still on flat surface. Measures gyro bias and noise floor. Run this FIRST.<br>
-    <b style="color:#666">Motor Bal Cal</b> — Bot drives straight. Gyro measures drift, trims motor PWM automatically.<br>
-    <b style="color:#666">Turn Rate Cal</b> — Bot turns in place at max correction. Measures real deg/s for feed-forward scaling.
+    <b style="color:#666">Motor Bal Cal</b> — Bot drives straight. Gyro measures drift, trims motor PWM automatically. Trim resets each run.<br>
+    <b style="color:#666">Turn Rate Cal</b> — Bot turns in direction of last error at max speed. Measures real deg/s for feed-forward scaling.<br>
+    <b style="color:#8b5cf6">Auto PID Tune</b> — Place bot on a straight line section. Uses relay method (Ziegler-Nichols) to find optimal Kp/Ki/Kd.
   </div>
   <div id="calResultsPanel" style="margin-top:10px;background:#0f0f0f;border:1px solid #2a2a2a;border-radius:7px;padding:10px;font-size:.72rem;color:#666;line-height:1.8">
     <span style="color:#444">No calibration results yet. Run IMU Cal → Motor Bal Cal → Turn Rate Cal in sequence.</span>
@@ -751,6 +771,14 @@ function clearLog(){ document.getElementById('logBox').innerHTML=''; }
 function cmd(c,ex={}){
   if(ws&&ws.readyState===1) ws.send(JSON.stringify({cmd:c,...ex}));
 }
+function startAutoPID_ui(){
+  if(!confirm('Place the bot on a STRAIGHT section of the line.\nIt will oscillate for up to 10s, then set Kp/Ki/Kd automatically.\n\nReady?')) return;
+  document.getElementById('btnAutoPID').style.display='none';
+  document.getElementById('btnStopAutoPID').style.display='';
+  cmd('auto_pid');
+  // Re-show button after 12s
+  setTimeout(()=>{ document.getElementById('btnAutoPID').style.display=''; document.getElementById('btnStopAutoPID').style.display='none'; }, 12000);
+}
 function sendPID(){
   const kp=+document.getElementById('kp').value;
   const ki=+document.getElementById('ki').value;
@@ -979,15 +1007,25 @@ void updateIMUCal(){
 
 // ══════════════════════════════════════════════════════════
 //  Motor Balance Calibration
+//  FIX: Trim sign was inverted. Positive avgYaw = bot drifting
+//  RIGHT → need to boost LEFT motor (negative trim for L).
+//  setMotors() does: if MOTOR_TRIM>=0: R+=trim, else L-=trim
+//  So to boost LEFT (negative trim): L -= (-trim) = L+trim ✓
+//  To boost RIGHT (positive trim):   R += trim             ✓
+//  avgYaw > 0 means drifting right → boost LEFT → trim < 0
+//  avgYaw < 0 means drifting left  → boost RIGHT → trim > 0
 // ══════════════════════════════════════════════════════════
 void startMotorBalCal(){
   if(!mpuOk){ wsLog("[MOTOR] ERROR: run IMU Cal first"); return; }
+  // Reset trim to zero each run so we measure clean drift
+  MOTOR_TRIM = 0;
   motorCalibrating  = true;
   motorCalStart     = millis();
   motorCalYawAccum  = 0.0f;
   motorCalSamples   = 0;
   headingAccum      = 0.0f;
-  wsLog("[MOTOR] Balance cal started — bot drives straight for 2s...");
+  wsLog("[MOTOR] Balance cal started — bot drives straight for 2.5s...");
+  wsLog("[MOTOR] Trim reset to 0 for clean measurement.");
   setMotors(BASE_SPEED, BASE_SPEED);
 }
 
@@ -1002,14 +1040,18 @@ void updateMotorBalCal(){
     stopMotors();
 
     float avgYaw = motorCalYawAccum / motorCalSamples;
-    int trim = (int)(avgYaw * 2.0f);
+    // FIX: Negate the sign — drifting right (positive yaw) means
+    // right motor is faster, so we need negative trim to boost left.
+    // drifting left (negative yaw) → positive trim boosts right.
+    int trim = -(int)(avgYaw * 3.0f);  // scale 3.0 gives ~1 PWM per 0.33 deg/s drift
     trim = constrain(trim, -50, 50);
-    MOTOR_TRIM += trim;
-    MOTOR_TRIM = constrain(MOTOR_TRIM, -50, 50);
+    MOTOR_TRIM = trim;  // Set absolute, not additive (since we reset to 0)
 
     wsLog("[MOTOR] Balance cal done!");
-    wsLog("[MOTOR]   Avg yaw drift = " + String(avgYaw, 2) + " deg/s");
-    wsLog("[MOTOR]   Trim applied  = " + String(trim) + "  (total trim = " + String(MOTOR_TRIM) + ")");
+    wsLog("[MOTOR]   Avg yaw drift = " + String(avgYaw, 2) + " deg/s"
+          + (avgYaw > 0.5f ? " (drifting RIGHT)" : avgYaw < -0.5f ? " (drifting LEFT)" : " (straight!)"));
+    wsLog("[MOTOR]   Trim set = " + String(MOTOR_TRIM)
+          + (MOTOR_TRIM > 0 ? " → right motor boosted" : MOTOR_TRIM < 0 ? " → left motor boosted" : " → no trim needed"));
     broadcastIMUState();
   }
 }
@@ -1017,6 +1059,8 @@ void updateMotorBalCal(){
 
 // ══════════════════════════════════════════════════════════
 //  Turn Rate Calibration
+//  Spins in the direction of last sensor error for
+//  consistency (not always hard-left).
 // ══════════════════════════════════════════════════════════
 void startTurnRateCal(){
   if(!mpuOk){ wsLog("[TURN_CAL] ERROR: run IMU Cal first"); return; }
@@ -1024,8 +1068,13 @@ void startTurnRateCal(){
   turnCalStart     = millis();
   turnCalYawAccum  = 0.0f;
   turnCalSamples   = 0;
-  wsLog("[TURN_CAL] Turn rate cal started — pivoting for 1.5s...");
-  setMotors(-MAX_SPEED, MAX_SPEED);
+  // Spin direction: use last position error — if bot was turning right,
+  // calibrate that direction. Default to right (+1) if no error known.
+  turnCalDirection = (lastPosition >= 0) ? 1 : -1;
+  wsLog("[TURN_CAL] Turn rate cal started — pivoting " +
+        String(turnCalDirection > 0 ? "RIGHT" : "LEFT") + " for 1.5s...");
+  // direction +1 = pivot right: left motor fwd, right motor rev
+  setMotors(MAX_SPEED * turnCalDirection, -MAX_SPEED * turnCalDirection);
 }
 
 void updateTurnRateCal(){
@@ -1046,6 +1095,114 @@ void updateTurnRateCal(){
     wsLog("[TURN_CAL]   Avg turn rate = " + String(avgTurnRate, 1) + " deg/s at full correction");
     wsLog("[TURN_CAL]   TURN_RATE_SCALE = " + String(TURN_RATE_SCALE, 1));
     broadcastIMUState();
+  }
+}
+
+
+// ══════════════════════════════════════════════════════════
+//  Auto PID Tuning — Ziegler-Nichols Relay Method
+//  Drives the bot on the line with bang-bang control,
+//  measures the natural oscillation period (Tu) and
+//  amplitude (a), then computes Kp, Ki, Kd.
+//
+//  Ku = (4 * relay_amplitude) / (π * oscillation_amplitude)
+//  Tu = measured oscillation period
+//  Kp = 0.6 * Ku,  Ki = 1.2*Ku/Tu,  Kd = 0.075*Ku*Tu
+// ══════════════════════════════════════════════════════════
+void startAutoPID(){
+  if(!isCalibrated){ wsLog("[AUTO_PID] ERROR: run IR Cal first"); return; }
+  autoPIDActive   = true;
+  autoPIDStart    = millis();
+  relayHigh       = false;
+  relayAmplitude  = (float)BASE_SPEED * 0.5f;  // relay output = ±50% of base
+  crossCount      = 0;
+  periodSum       = 0.0f;
+  amplitudeSum    = 0.0f;
+  peakError       = 0.0f;
+  lastCrossTime   = millis();
+  lastCrossError  = 0.0f;
+  wsLog("[AUTO_PID] Relay tune started — bot must be ON the line.");
+  wsLog("[AUTO_PID] Window: 10s, relay amp = " + String((int)relayAmplitude));
+}
+
+void updateAutoPID(){
+  if(!autoPIDActive) return;
+
+  float err = (float)lastPosition;
+  // Track peak error amplitude this half-cycle
+  if(fabsf(err) > peakError) peakError = fabsf(err);
+
+  // Detect zero-crossing (error changed sign)
+  bool  crossed = (err >= 0.0f) != (lastCrossError >= 0.0f);
+  if(crossed && millis() - lastCrossTime > 50){  // debounce 50ms
+    unsigned long period2 = millis() - lastCrossTime;  // half-period in ms
+    if(period2 > 50 && period2 < 3000){  // sanity: 50ms–3s
+      if(crossCount > 0){  // skip first half-cycle (undefined)
+        periodSum    += period2 * 2.0f;  // full period
+        amplitudeSum += peakError;
+        crossCount++;
+        wsLog("[AUTO_PID] cross #" + String(crossCount) +
+              "  half-T=" + String(period2) + "ms  peakErr=" + String((int)peakError));
+      } else {
+        crossCount = 1;  // mark that we've seen first crossing
+      }
+      peakError     = 0.0f;  // reset for next half-cycle
+      lastCrossTime = millis();
+    }
+  }
+  lastCrossError = err;
+
+  // Relay: switch output at zero-crossing
+  if(err > 0.0f)  relayHigh = true;
+  else            relayHigh = false;
+
+  float correction = relayHigh ? relayAmplitude : -relayAmplitude;
+  int spd = constrain(BASE_SPEED, MIN_SPEED, MAX_SPEED);
+  int L = constrain(spd - (int)correction, -MAX_SPEED, MAX_SPEED);
+  int R = constrain(spd + (int)correction, -MAX_SPEED, MAX_SPEED);
+  setMotors(L, R);
+
+  // Done?
+  unsigned long elapsed = millis() - autoPIDStart;
+  if(elapsed >= AUTO_PID_MS || crossCount >= 10){
+    autoPIDActive = false;
+    stopMotors();
+
+    int validCycles = crossCount - 1;  // first crossing is reference
+    if(validCycles < 2){
+      wsLog("[AUTO_PID] Not enough oscillations detected (" + String(validCycles) + ").");
+      wsLog("[AUTO_PID] Try: higher speed, lower Kp, or make sure bot is on straight line.");
+      return;
+    }
+
+    float Tu_ms = periodSum / validCycles;           // avg oscillation period (ms)
+    float a = amplitudeSum / validCycles;             // avg oscillation amplitude
+    float Tu = Tu_ms / 1000.0f;                      // in seconds
+    // Ultimate gain formula for relay method
+    float Ku = (4.0f * relayAmplitude) / (3.14159f * max(a, 1.0f));
+
+    // Ziegler-Nichols PID formulas
+    float newKp = 0.6f  * Ku;
+    float newKi = 1.2f  * Ku / Tu;
+    float newKd = 0.075f * Ku * Tu;
+
+    // Clamp to safe ranges
+    newKp = constrain(newKp, 0.05f, 5.0f);
+    newKi = constrain(newKi, 0.0f,  1.0f);
+    newKd = constrain(newKd, 0.0f,  5.0f);
+
+    Kp = newKp; Ki = newKi; Kd = newKd;
+    pidIntegral = 0; pidLastError = 0;
+
+    wsLog("[AUTO_PID] === TUNING COMPLETE ===");
+    wsLog("[AUTO_PID]   Cycles sampled = " + String(validCycles));
+    wsLog("[AUTO_PID]   Tu = " + String(Tu * 1000.0f, 0) + " ms,  Ku = " + String(Ku, 3));
+    wsLog("[AUTO_PID]   Kp = " + String(Kp, 3));
+    wsLog("[AUTO_PID]   Ki = " + String(Ki, 4));
+    wsLog("[AUTO_PID]   Kd = " + String(Kd, 3));
+    wsLog("[AUTO_PID] Verify on track, then use Save to keep.");
+
+    String s = buildStateJson(); wsServer.broadcastTXT(s);
   }
 }
 
@@ -1449,6 +1606,14 @@ void onWsEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length){
   else if(!strcmp(c,"turn_rate_cal")){
     startTurnRateCal();
   }
+  else if(!strcmp(c,"auto_pid")){
+    startAutoPID();
+  }
+  else if(!strcmp(c,"stop_auto_pid")){
+    autoPIDActive = false;
+    stopMotors();
+    wsLog("[AUTO_PID] Aborted.");
+  }
   else if(!strcmp(c,"save")){
     saveAll();
   }
@@ -1610,6 +1775,9 @@ void loop(){
 
   if(calibrating){
     updateCalibration();
+  } else if(autoPIDActive){
+    // Auto PID tune takes over motor control
+    updateAutoPID();
   } else if(robotRunning){
     detectEndZone();
     if(robotRunning) runPID();
