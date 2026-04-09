@@ -160,6 +160,7 @@ bool invertLine = false;
 
 // ── State ────────────────────────────────────────────────
 bool robotRunning = false;
+bool startPending = false;
 
 // ── End-zone detection ───────────────────────────────────
 bool endZoneEnable      = true;
@@ -1004,6 +1005,17 @@ void updateIMUCal(){
     wsLog("[IMU]   Bias Z = " + String(gyroBiasZ, 3) + " deg/s");
     wsLog("[IMU]   Noise  = +-" + String(gyroNoiseFloor, 3) + " deg/s  (" + String(imuCalCount) + " samples)");
     broadcastIMUState();
+    
+    if (startPending) {
+      startPending = false;
+      robotRunning = true;
+      pidIntegral = 0;
+      pidLastError = 0;
+      headingAccum = 0.0f;
+      resetEndZone();
+      wsLog("[CMD] Started after Cal");
+      beep(1);
+    }
   }
 }
 
@@ -1587,14 +1599,12 @@ void onWsEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length){
   const char* c=doc["cmd"]; if(!c) return;
 
   if(!strcmp(c,"start")){
-    robotRunning=true; pidIntegral=0; pidLastError=0;
-    headingAccum=0.0f;
-    resetEndZone();
-    wsLog("[CMD] Start");
-    beep(1);
+    startIMUCal();
+    startPending = true;
+    wsLog("[CMD] Wait 3s for IMU Cal...");
   }
   else if(!strcmp(c,"stop")){
-    robotRunning=false; calibrating=false;
+    robotRunning=false; calibrating=false; startPending=false;
     imuCalibrating=false; motorCalibrating=false; turnCalibrating=false;
     stopMotors();
     wsLog("[CMD] Stop");
