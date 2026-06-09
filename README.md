@@ -4,8 +4,6 @@ A high-performance, PID-controlled line-following robot with a real-time web das
 
 ![Dashboard Preview](https://img.shields.io/badge/UI-Liquid_Glass-blue?style=for-the-badge)
 ![ESP32](https://img.shields.io/badge/Hardware-ESP32-green?style=for-the-badge)
-![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)
-
 ---
 
 ## 🌟 Key Features
