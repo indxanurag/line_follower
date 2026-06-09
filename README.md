@@ -80,5 +80,7 @@ A high-performance, PID-controlled line-following robot with a real-time web das
 ---
 
 ## 📜 License
-MIT License - Feel free to use and modify for your own robotics projects!
+© 2026 Anurag Biswas, Siv Sagar. All rights reserved.
+
+This project and all associated hardware designs, firmware, software, and documentation are the intellectual property of the team. No part of this project may be reproduced, distributed, modified, or used in any form without explicit written permission from the authors.
 
